@@ -5606,7 +5606,6 @@ public class Player extends EntityHuman implements CommandSender, ChunkLoader, I
 
     public void registerChunkBlobs(long[] blobHashes, List<byte[]> blobs) {
         synchronized (blobLock) {
-            // 너무 많은 pending blob 체크
             if (pendingBlobs.size() > MAX_PENDING_BLOBS) {
                 getServer().getLogger().error("Player " + getName() + " has too many pending blobs: " + pendingBlobs.size());
                 close("", "Too many pending chunks");
@@ -5628,21 +5627,15 @@ public class Player extends EntityHuman implements CommandSender, ChunkLoader, I
         }
     }
 
-    /**
-     * Blob이 확인되었을 때 처리
-     */
     public void handleBlobHit(long blobHash) {
         synchronized (blobLock) {
-            // Pending blob 제거
             pendingBlobs.remove(blobHash);
 
-            // Transaction에서 제거
             Iterator<Map<Long, Set<Long>>> iter = openChunkTransactions.iterator();
             while (iter.hasNext()) {
                 Map<Long, Set<Long>> transaction = iter.next();
                 transaction.remove(blobHash);
 
-                // 빈 transaction 제거
                 if (transaction.isEmpty()) {
                     iter.remove();
                 }
@@ -5650,9 +5643,6 @@ public class Player extends EntityHuman implements CommandSender, ChunkLoader, I
         }
     }
 
-    /**
-     * Blob이 miss되었을 때 데이터 반환
-     */
     public byte[] getBlobData(long blobHash) {
         synchronized (blobLock) {
             return pendingBlobs.get(blobHash);

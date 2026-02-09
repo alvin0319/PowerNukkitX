@@ -4005,7 +4005,6 @@ public class Level implements Metadatable {
                             pk.dimension = getDimensionData().getDimensionId();
                             pk.subChunkCount = chunkDataWithBlobs.subChunkCount();
 
-                            // ===== 월드 설정과 플레이어 클라이언트 모두 확인 =====
                             boolean levelCacheEnabled = this.isClientChunkCacheEnabled();
                             boolean playerCacheSupported = player.isClientCacheSupported();
                             boolean useCaching = levelCacheEnabled && playerCacheSupported;

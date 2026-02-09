@@ -383,7 +383,6 @@ public class LevelDBProvider implements LevelProvider {
             final ChunkSection[] sections = unsafeChunk.getSections();
             int subChunkCount = unsafeChunk.getDimensionData().getChunkSectionCount();
 
-            // 실제로 데이터가 있는 가장 높은 서브청크 찾기
             while (subChunkCount-- != 0) {
                 if (sections[subChunkCount] != null) {
                     break;
@@ -391,12 +390,10 @@ public class LevelDBProvider implements LevelProvider {
             }
             int total = subChunkCount + 1;
 
-            // ===== Blob 리스트 초기화 =====
             List<byte[]> blobs = new ArrayList<>();
             List<Long> blobHashes = new ArrayList<>();
 
-            // ===== 1. 각 서브청크를 개별 blob으로 인코딩 =====
-            ByteBuf fullChunkBuf = ByteBufAllocator.DEFAULT.ioBuffer(); // 캐시 비활성화용
+            ByteBuf fullChunkBuf = ByteBufAllocator.DEFAULT.ioBuffer();
 
             try {
                 boolean isAntiXrayEnabled = level != null && level.isAntiXrayEnabled();
@@ -410,24 +407,16 @@ public class LevelDBProvider implements LevelProvider {
 
                     ByteBuf subChunkBuf = ByteBufAllocator.DEFAULT.ioBuffer();
                     try {
-                        // 서브청크 데이터 인코딩
-                        if (isAntiXrayEnabled) {
-                            sections[i].writeObfuscatedToBuf(level, subChunkBuf);
-                        } else {
-                            sections[i].writeToBuf(subChunkBuf);
-                        }
+                        sections[i].writeToBuf(subChunkBuf);
 
-                        // Blob으로 변환
                         byte[] subChunkData = new byte[subChunkBuf.readableBytes()];
                         subChunkBuf.getBytes(0, subChunkData);
 
-                        // xxhash로 해시 계산
                         long hash = xxHash.hash(subChunkData, 0, subChunkData.length, HASH_SEED);
 
                         blobs.add(subChunkData);
                         blobHashes.add(hash);
 
-                        // 전체 청크 버퍼에도 추가 (캐시 비활성화 시 사용)
                         subChunkBuf.resetReaderIndex();
                         fullChunkBuf.writeBytes(subChunkBuf);
                     } finally {
@@ -435,7 +424,6 @@ public class LevelDBProvider implements LevelProvider {
                     }
                 }
 
-                // ===== 2. Biome 데이터를 별도 blob으로 처리 =====
                 ByteBuf biomeBuf = ByteBufAllocator.DEFAULT.ioBuffer();
                 try {
                     for (int i = 0; i < total; i++) {
@@ -450,14 +438,12 @@ public class LevelDBProvider implements LevelProvider {
                     blobs.add(biomeData);
                     blobHashes.add(hash);
 
-                    // 전체 청크 버퍼에도 추가
                     biomeBuf.resetReaderIndex();
                     fullChunkBuf.writeBytes(biomeBuf);
                 } finally {
                     biomeBuf.release();
                 }
 
-                // ===== 3. Block Entities 인코딩 (항상 전송, 캐시되지 않음) =====
                 ByteBuf blockEntityBuf = ByteBufAllocator.DEFAULT.ioBuffer();
                 try {
                     blockEntityBuf.writeByte(0); // border blocks
@@ -466,7 +452,6 @@ public class LevelDBProvider implements LevelProvider {
                     for (BlockEntity blockEntity : unsafeChunk.getBlockEntities().values()) {
                         if (blockEntity instanceof BlockEntitySpawnable blockEntitySpawnable) {
                             tagList.add(blockEntitySpawnable.getSpawnCompound());
-                            // Block entity 패킷도 별도로 전송
                             level.addChunkPacket(
                                     blockEntitySpawnable.getChunkX(),
                                     blockEntitySpawnable.getChunkZ(),
@@ -481,22 +466,18 @@ public class LevelDBProvider implements LevelProvider {
                         throw new RuntimeException(e);
                     }
 
-                    // Block Entity 데이터 추출
                     byte[] blockEntityData = new byte[blockEntityBuf.readableBytes()];
                     blockEntityBuf.getBytes(0, blockEntityData);
                     blockEntityDataRef.set(blockEntityData);
 
-                    // 전체 청크 버퍼에도 추가
                     blockEntityBuf.resetReaderIndex();
                     fullChunkBuf.writeBytes(blockEntityBuf);
                 } finally {
                     blockEntityBuf.release();
                 }
 
-                // ===== 4. 결과 저장 =====
                 subChunkCountRef.set(total);
 
-                // Blob 해시 배열 생성
                 long[] hashArray = new long[blobHashes.size()];
                 for (int i = 0; i < blobHashes.size(); i++) {
                     hashArray[i] = blobHashes.get(i);
@@ -504,7 +485,6 @@ public class LevelDBProvider implements LevelProvider {
                 blobHashesRef.set(hashArray);
                 blobsRef.set(blobs);
 
-                // 전체 데이터 (캐시 비활성화 시 사용)
                 byte[] fullData = new byte[fullChunkBuf.readableBytes()];
                 fullChunkBuf.getBytes(0, fullData);
                 fullDataRef.set(fullData);
