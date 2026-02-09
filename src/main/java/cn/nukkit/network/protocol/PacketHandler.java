@@ -599,4 +599,10 @@ public interface PacketHandler {
     default void handle(ServerboundDataStorePacket pk) {
 
     }
+
+    default void handle(ClientCacheBlobStatusPacket pk) {
+    }
+
+    default void handle(ClientCacheMissResponsePacket pk) {
+    }
 }

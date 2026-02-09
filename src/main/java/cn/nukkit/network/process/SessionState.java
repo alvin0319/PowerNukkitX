@@ -9,6 +9,8 @@ public enum SessionState {
 
     ENCRYPTION(),
 
+    CLIENT_CACHE(),
+
     PRE_SPAWN(),
 
     IN_GAME(),

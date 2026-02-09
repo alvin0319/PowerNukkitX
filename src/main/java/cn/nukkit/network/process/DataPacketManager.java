@@ -89,7 +89,8 @@ public final class DataPacketManager {
                 new RequestPermissionsProcessor(),
                 new ItemStackRequestPacketProcessor(),
                 new SetLocalPlayerAsInitializedPacketProcessor(),
-                new ToggleCrafterSlotRequestPacketProcessor()
+                new ToggleCrafterSlotRequestPacketProcessor(),
+                new ClientCacheBlobStatusProcessor()
         );
     }
 }

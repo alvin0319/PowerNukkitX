@@ -11,6 +11,6 @@ public class HandshakePacketHandler extends BedrockSessionPacketHandler {
 
     @Override
     public void handle(ClientToServerHandshakePacket pk) {
-        session.getMachine().fire(SessionState.RESOURCE_PACK);
+        session.getMachine().fire(SessionState.CLIENT_CACHE);
     }
 }

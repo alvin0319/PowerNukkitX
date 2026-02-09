@@ -11,6 +11,7 @@ import cn.nukkit.level.GameRules;
 import cn.nukkit.level.Level;
 import cn.nukkit.level.format.Chunk;
 import cn.nukkit.level.format.ChunkConversion;
+import cn.nukkit.level.format.ChunkDataWithBlobs;
 import cn.nukkit.level.format.ChunkSection;
 import cn.nukkit.level.format.IChunk;
 import cn.nukkit.level.format.LevelConfig;
@@ -29,10 +30,13 @@ import cn.nukkit.utils.ChunkException;
 import cn.nukkit.utils.SemVersion;
 import cn.nukkit.utils.Utils;
 import cn.nukkit.utils.collection.nb.Long2ObjectNonBlockingMap;
+import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufAllocator;
 import io.netty.buffer.ByteBufOutputStream;
 import it.unimi.dsi.fastutil.Pair;
 import lombok.extern.slf4j.Slf4j;
+import net.jpountz.xxhash.XXHash64;
+import net.jpountz.xxhash.XXHashFactory;
 import org.iq80.leveldb.CompressionType;
 import org.iq80.leveldb.Options;
 import org.jetbrains.annotations.Nullable;
@@ -74,6 +78,8 @@ public class LevelDBProvider implements LevelProvider {
     protected final String path;
     protected CompoundTag worldDynamicProperties = new CompoundTag();
     protected boolean worldDynamicPropertiesDirty = false;
+    private static final XXHashFactory xxHashFactory = XXHashFactory.fastestInstance();
+    private static final int HASH_SEED = 0;
 
     public LevelDBProvider(Level level, String path) throws IOException {
         this.storage = CACHE.computeIfAbsent(path, p -> {
@@ -358,6 +364,163 @@ public class LevelDBProvider implements LevelProvider {
             }
         });
         return Pair.of(data.get(), subChunkCountRef.get());
+    }
+
+    @Override
+    public ChunkDataWithBlobs requestChunkDataWithBlobs(int x, int z) {
+        IChunk chunk = this.getChunk(x, z, false);
+        if (chunk == null) {
+            throw new ChunkException("Invalid Chunk Set");
+        }
+
+        AtomicReference<byte[]> blockEntityDataRef = new AtomicReference<>();
+        AtomicReference<Integer> subChunkCountRef = new AtomicReference<>();
+        AtomicReference<long[]> blobHashesRef = new AtomicReference<>();
+        AtomicReference<List<byte[]>> blobsRef = new AtomicReference<>();
+        AtomicReference<byte[]> fullDataRef = new AtomicReference<>();
+
+        chunk.batchProcess(unsafeChunk -> {
+            final ChunkSection[] sections = unsafeChunk.getSections();
+            int subChunkCount = unsafeChunk.getDimensionData().getChunkSectionCount();
+
+            // 실제로 데이터가 있는 가장 높은 서브청크 찾기
+            while (subChunkCount-- != 0) {
+                if (sections[subChunkCount] != null) {
+                    break;
+                }
+            }
+            int total = subChunkCount + 1;
+
+            // ===== Blob 리스트 초기화 =====
+            List<byte[]> blobs = new ArrayList<>();
+            List<Long> blobHashes = new ArrayList<>();
+
+            // ===== 1. 각 서브청크를 개별 blob으로 인코딩 =====
+            ByteBuf fullChunkBuf = ByteBufAllocator.DEFAULT.ioBuffer(); // 캐시 비활성화용
+
+            try {
+                boolean isAntiXrayEnabled = level != null && level.isAntiXrayEnabled();
+
+                XXHash64 xxHash = xxHashFactory.hash64();
+
+                for (int i = 0; i < total; i++) {
+                    if (sections[i] == null) {
+                        sections[i] = new ChunkSection((byte) (i + getDimensionData().getMinSectionY()));
+                    }
+
+                    ByteBuf subChunkBuf = ByteBufAllocator.DEFAULT.ioBuffer();
+                    try {
+                        // 서브청크 데이터 인코딩
+                        if (isAntiXrayEnabled) {
+                            sections[i].writeObfuscatedToBuf(level, subChunkBuf);
+                        } else {
+                            sections[i].writeToBuf(subChunkBuf);
+                        }
+
+                        // Blob으로 변환
+                        byte[] subChunkData = new byte[subChunkBuf.readableBytes()];
+                        subChunkBuf.getBytes(0, subChunkData);
+
+                        // xxhash로 해시 계산
+                        long hash = xxHash.hash(subChunkData, 0, subChunkData.length, HASH_SEED);
+
+                        blobs.add(subChunkData);
+                        blobHashes.add(hash);
+
+                        // 전체 청크 버퍼에도 추가 (캐시 비활성화 시 사용)
+                        subChunkBuf.resetReaderIndex();
+                        fullChunkBuf.writeBytes(subChunkBuf);
+                    } finally {
+                        subChunkBuf.release();
+                    }
+                }
+
+                // ===== 2. Biome 데이터를 별도 blob으로 처리 =====
+                ByteBuf biomeBuf = ByteBufAllocator.DEFAULT.ioBuffer();
+                try {
+                    for (int i = 0; i < total; i++) {
+                        sections[i].biomes().writeToNetwork(biomeBuf, Integer::intValue);
+                    }
+
+                    byte[] biomeData = new byte[biomeBuf.readableBytes()];
+                    biomeBuf.getBytes(0, biomeData);
+
+                    long hash = xxHash.hash(biomeData, 0, biomeData.length, HASH_SEED);
+
+                    blobs.add(biomeData);
+                    blobHashes.add(hash);
+
+                    // 전체 청크 버퍼에도 추가
+                    biomeBuf.resetReaderIndex();
+                    fullChunkBuf.writeBytes(biomeBuf);
+                } finally {
+                    biomeBuf.release();
+                }
+
+                // ===== 3. Block Entities 인코딩 (항상 전송, 캐시되지 않음) =====
+                ByteBuf blockEntityBuf = ByteBufAllocator.DEFAULT.ioBuffer();
+                try {
+                    blockEntityBuf.writeByte(0); // border blocks
+
+                    final List<CompoundTag> tagList = new ArrayList<>();
+                    for (BlockEntity blockEntity : unsafeChunk.getBlockEntities().values()) {
+                        if (blockEntity instanceof BlockEntitySpawnable blockEntitySpawnable) {
+                            tagList.add(blockEntitySpawnable.getSpawnCompound());
+                            // Block entity 패킷도 별도로 전송
+                            level.addChunkPacket(
+                                    blockEntitySpawnable.getChunkX(),
+                                    blockEntitySpawnable.getChunkZ(),
+                                    blockEntitySpawnable.getSpawnPacket()
+                            );
+                        }
+                    }
+
+                    try (ByteBufOutputStream stream = new ByteBufOutputStream(blockEntityBuf)) {
+                        NBTIO.write(tagList, stream, ByteOrder.LITTLE_ENDIAN, true);
+                    } catch (IOException e) {
+                        throw new RuntimeException(e);
+                    }
+
+                    // Block Entity 데이터 추출
+                    byte[] blockEntityData = new byte[blockEntityBuf.readableBytes()];
+                    blockEntityBuf.getBytes(0, blockEntityData);
+                    blockEntityDataRef.set(blockEntityData);
+
+                    // 전체 청크 버퍼에도 추가
+                    blockEntityBuf.resetReaderIndex();
+                    fullChunkBuf.writeBytes(blockEntityBuf);
+                } finally {
+                    blockEntityBuf.release();
+                }
+
+                // ===== 4. 결과 저장 =====
+                subChunkCountRef.set(total);
+
+                // Blob 해시 배열 생성
+                long[] hashArray = new long[blobHashes.size()];
+                for (int i = 0; i < blobHashes.size(); i++) {
+                    hashArray[i] = blobHashes.get(i);
+                }
+                blobHashesRef.set(hashArray);
+                blobsRef.set(blobs);
+
+                // 전체 데이터 (캐시 비활성화 시 사용)
+                byte[] fullData = new byte[fullChunkBuf.readableBytes()];
+                fullChunkBuf.getBytes(0, fullData);
+                fullDataRef.set(fullData);
+
+            } finally {
+                fullChunkBuf.release();
+            }
+        });
+
+        return new ChunkDataWithBlobs(
+                blockEntityDataRef.get(),
+                subChunkCountRef.get(),
+                blobHashesRef.get(),
+                blobsRef.get(),
+                fullDataRef.get()
+        );
     }
 
 

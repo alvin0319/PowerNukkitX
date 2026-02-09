@@ -158,6 +158,7 @@ import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.Map.Entry;
 import java.util.Queue;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -345,6 +346,16 @@ public class Player extends EntityHuman implements CommandSender, ChunkLoader, I
      * </p>
      */
     protected EnumSet<ClientInputLocksFlag> clientInputLocks = EnumSet.noneOf(ClientInputLocksFlag.class);
+
+    /**
+     * Reported by the client whether it supports client cache.
+     */
+    private boolean clientCacheSupported = false;
+    private final Object blobLock = new Object();
+    private final Map<Long, byte[]> pendingBlobs = new ConcurrentHashMap<>();
+    private final List<Map<Long, Set<Long>>> openChunkTransactions = new ArrayList<>();
+    private static final int MAX_PENDING_BLOBS = 4096;
+    private static final int MAX_CHUNK_TRANSACTIONS = 8;
 
     @UsedByReflection
     public Player(@NotNull BedrockSession session, @NotNull PlayerInfo info) {
@@ -5579,4 +5590,72 @@ public class Player extends EntityHuman implements CommandSender, ChunkLoader, I
         this.dataPacket(pk);
     }
 
+    public void setClientCacheSupported(boolean clientCacheSupported) {
+        this.clientCacheSupported = clientCacheSupported;
+    }
+
+    /**
+     * Returns whether the client supports client-sie chunk caching.
+     */
+    public boolean isClientCacheSupported() {
+        if (loginChainData.getDeviceOS() == 7) {
+            return false; // Nintendo is NOT supported
+        }
+        return clientCacheSupported;
+    }
+
+    public void registerChunkBlobs(long[] blobHashes, List<byte[]> blobs) {
+        synchronized (blobLock) {
+            // 너무 많은 pending blob 체크
+            if (pendingBlobs.size() > MAX_PENDING_BLOBS) {
+                getServer().getLogger().error("Player " + getName() + " has too many pending blobs: " + pendingBlobs.size());
+                close("", "Too many pending chunks");
+                return;
+            }
+
+            if (openChunkTransactions.size() >= MAX_CHUNK_TRANSACTIONS) {
+                openChunkTransactions.remove(0);
+            }
+
+            Map<Long, Set<Long>> transaction = new HashMap<>();
+            for (int i = 0; i < blobHashes.length && i < blobs.size(); i++) {
+                long hash = blobHashes[i];
+                pendingBlobs.put(hash, blobs.get(i));
+                transaction.put(hash, new HashSet<>());
+            }
+
+            openChunkTransactions.add(transaction);
+        }
+    }
+
+    /**
+     * Blob이 확인되었을 때 처리
+     */
+    public void handleBlobHit(long blobHash) {
+        synchronized (blobLock) {
+            // Pending blob 제거
+            pendingBlobs.remove(blobHash);
+
+            // Transaction에서 제거
+            Iterator<Map<Long, Set<Long>>> iter = openChunkTransactions.iterator();
+            while (iter.hasNext()) {
+                Map<Long, Set<Long>> transaction = iter.next();
+                transaction.remove(blobHash);
+
+                // 빈 transaction 제거
+                if (transaction.isEmpty()) {
+                    iter.remove();
+                }
+            }
+        }
+    }
+
+    /**
+     * Blob이 miss되었을 때 데이터 반환
+     */
+    public byte[] getBlobData(long blobHash) {
+        synchronized (blobLock) {
+            return pendingBlobs.get(blobHash);
+        }
+    }
 }

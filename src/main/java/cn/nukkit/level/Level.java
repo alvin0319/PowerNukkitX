@@ -104,6 +104,7 @@ import it.unimi.dsi.fastutil.objects.ObjectSet;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.Getter;
+import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -364,6 +365,10 @@ public class Level implements Metadatable {
     private boolean thundering = false;
     private int thunderTime = 0;
     private Object2IntOpenHashMap<String> playerWeatherShowMap = new Object2IntOpenHashMap<String>();
+
+    @Getter
+    @Setter
+    private volatile boolean clientChunkCacheEnabled = true;
 
     ///
 
@@ -3985,7 +3990,8 @@ public class Level implements Metadatable {
             if (players != null) {
                 IChunk chunk = this.getChunk(x, z);
                 if (chunk.getChunkState().canSend()) {
-                    final var pair = this.requireProvider().requestChunkData(x, z);
+                    final var chunkDataWithBlobs = this.requireProvider().requestChunkDataWithBlobs(x, z);
+
                     for (Player player : Objects.requireNonNull(players).values()) {
                         if (player.isConnected()) {
                             NetworkChunkPublisherUpdatePacket ncp = new NetworkChunkPublisherUpdatePacket();
@@ -3997,10 +4003,27 @@ public class Level implements Metadatable {
                             pk.chunkX = x;
                             pk.chunkZ = z;
                             pk.dimension = getDimensionData().getDimensionId();
-                            pk.subChunkCount = pair.right();
-                            pk.data = pair.left();
+                            pk.subChunkCount = chunkDataWithBlobs.subChunkCount();
+
+                            // ===== 월드 설정과 플레이어 클라이언트 모두 확인 =====
+                            boolean levelCacheEnabled = this.isClientChunkCacheEnabled();
+                            boolean playerCacheSupported = player.isClientCacheSupported();
+                            boolean useCaching = levelCacheEnabled && playerCacheSupported;
+
+                            if (useCaching) {
+                                pk.cacheEnabled = true;
+                                pk.blobIds = chunkDataWithBlobs.blobHashes();
+                                pk.data = chunkDataWithBlobs.blockEntityData();
+
+                                player.registerChunkBlobs(chunkDataWithBlobs.blobHashes(),
+                                        chunkDataWithBlobs.blobs());
+                            } else {
+                                pk.cacheEnabled = false;
+                                pk.blobIds = new long[0];
+                                pk.data = chunkDataWithBlobs.fullData();
+                            }
+
                             player.sendChunk(x, z, pk);
-                            //player.refreshBlockEntity(chunk);
                         }
                     }
                     this.chunkSendQueue.remove(index);

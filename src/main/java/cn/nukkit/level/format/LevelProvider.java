@@ -19,6 +19,8 @@ public interface LevelProvider {
 
     Pair<byte[], Integer> requestChunkData(int x, int z);
 
+    ChunkDataWithBlobs requestChunkDataWithBlobs(int x, int z);
+
     String getPath();
 
     IChunk getLoadedChunk(int x, int z);

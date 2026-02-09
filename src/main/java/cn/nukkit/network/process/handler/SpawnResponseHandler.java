@@ -4,7 +4,9 @@ import cn.nukkit.Player;
 import cn.nukkit.entity.data.property.EntityProperty;
 import cn.nukkit.nbt.tag.CompoundTag;
 import cn.nukkit.network.connection.BedrockSession;
+import cn.nukkit.network.process.processor.ClientCacheBlobStatusProcessor;
 import cn.nukkit.network.protocol.AvailableEntityIdentifiersPacket;
+import cn.nukkit.network.protocol.ClientCacheBlobStatusPacket;
 import cn.nukkit.network.protocol.ItemRegistryPacket;
 import cn.nukkit.network.protocol.RequestChunkRadiusPacket;
 import cn.nukkit.network.protocol.SetLocalPlayerAsInitializedPacket;
@@ -159,5 +161,10 @@ public class SpawnResponseHandler extends BedrockSessionPacketHandler {
     public void handle(SetLocalPlayerAsInitializedPacket pk) {
         log.debug("receive SetLocalPlayerAsInitializedPacket for {}", this.player.getPlayerInfo().getUsername());
         handle.onPlayerLocallyInitialized();
+    }
+
+    @Override
+    public void handle(ClientCacheBlobStatusPacket pk) {
+        ClientCacheBlobStatusProcessor.handlePacket(session, pk);
     }
 }

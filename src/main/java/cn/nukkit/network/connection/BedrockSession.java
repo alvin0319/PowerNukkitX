@@ -18,6 +18,7 @@ import cn.nukkit.network.connection.netty.codec.packet.BedrockPacketCodec;
 import cn.nukkit.network.connection.util.HandleByteBuf;
 import cn.nukkit.network.process.DataPacketManager;
 import cn.nukkit.network.process.SessionState;
+import cn.nukkit.network.process.handler.ClientCacheStatusHandler;
 import cn.nukkit.network.process.handler.HandshakePacketHandler;
 import cn.nukkit.network.process.handler.InGamePacketHandler;
 import cn.nukkit.network.process.handler.LoginHandler;
@@ -39,6 +40,7 @@ import io.netty.buffer.CompositeByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.util.internal.PlatformDependent;
 import lombok.Getter;
+import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
 import org.checkerframework.checker.nullness.qual.NonNull;
 import org.jetbrains.annotations.ApiStatus;
@@ -79,6 +81,9 @@ public class BedrockSession {
     /* ---------------- Pacing heavy packets, reduce bursting and esure client sync ------------- */
     private final boolean pacingEnabled;
     private final OutboundScheduler scheduler;
+
+    @Setter
+    private boolean clientCacheSupported = false;
 
     public BedrockSession(BedrockPeer peer, int subClientId) {
         this.peer = peer;
@@ -127,6 +132,13 @@ public class BedrockSession {
                     log.debug("Player {} enter ENCRYPTION stage", getPeer().getSocketAddress().toString());
                     this.setPacketHandler(new HandshakePacketHandler(this));
                 })
+                .permit(SessionState.CLIENT_CACHE, SessionState.CLIENT_CACHE);
+
+        cfg.configure(SessionState.CLIENT_CACHE)
+                .onEntry(() -> {
+                    log.debug("Player {} enter CLIENT_CACHE stage", getPeer().getSocketAddress().toString());
+                    this.setPacketHandler(new ClientCacheStatusHandler(this));
+                })
                 .permit(SessionState.RESOURCE_PACK, SessionState.RESOURCE_PACK);
 
         cfg.configure(SessionState.RESOURCE_PACK)
@@ -150,6 +162,7 @@ public class BedrockSession {
                     }
                     this.onPlayerCreated(player);
                     player.processLogin();
+                    player.setClientCacheSupported(this.clientCacheSupported);
                     this.setPacketHandler(new SpawnResponseHandler(this));
                     // The reason why teleport player to their position is for gracefully client-side spawn,
                     // although we need some hacks, It is definitely a fairly worthy trade.
